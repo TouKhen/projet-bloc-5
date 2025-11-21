@@ -19,6 +19,29 @@ def load_file(path: str | Path) -> pd.DataFrame:
         raise ValueError(f"Failed to load JSON file from {path}: {str(e)}")
 
 
+def load_large_jsonl(filepath, chunksize=10000):
+    """
+    Loads large JSON Lines (JSONL) file into a pandas DataFrame in chunks.
+
+    This function is designed to read a JSONL file in manageable chunks for files
+    that are too large to be loaded into memory at once. It processes the file in
+    segments and combines the chunks into a single DataFrame.
+
+    :param filepath: The path to the JSONL file to be loaded.
+    :param chunksize: The number of lines to be read in each chunk from the JSONL
+        file. Defaults to 10,000 lines.
+    :return: A pandas DataFrame containing the concatenated data from all the
+        chunks.
+    """
+    chunks = []
+    reader = pd.read_json(filepath, lines=True, chunksize=chunksize)
+
+    for chunk in reader:
+        chunks.append(chunk)
+
+    return pd.concat(chunks, ignore_index=True)
+
+
 
 def load_multiple_files(paths: list[str]) -> pd.DataFrame:
     """
@@ -38,7 +61,7 @@ def load_multiple_files(paths: list[str]) -> pd.DataFrame:
     global_df = pd.DataFrame()
 
     for path in paths:
-        df = load_file(path)
+        df = load_large_jsonl(path)
         global_df = pd.concat([global_df, df], ignore_index=True)
 
     return global_df
@@ -56,7 +79,25 @@ def save_file(df: pd.DataFrame, path: str | Path) -> None:
     :type path: str | Path
     :return: None
     """
-    df.to_json(path, orient="records", lines=True)
+    if isinstance(path, Path):
+        path = str(path)
+
+        # Process in chunks to manage memory efficiently
+    chunk_size = 50000  # Adjust based on your system's available memory
+
+    with open(path, 'w', encoding='utf-8') as f:
+        for start_idx in range(0, len(df), chunk_size):
+            end_idx = min(start_idx + chunk_size, len(df))
+            chunk = df.iloc[start_idx:end_idx]
+
+            # Use to_json with lines=True on smaller chunks
+            chunk_json = chunk.to_json(orient='records', lines=True)
+            f.write(chunk_json)
+
+            # Add newline if not the last chunk and chunk doesn't end with newline
+            if end_idx < len(df) and not chunk_json.endswith('\n'):
+                f.write('\n')
+
 
 
 def clean_items_data(items_df: pd.DataFrame) -> pd.DataFrame:
@@ -76,7 +117,7 @@ def clean_items_data(items_df: pd.DataFrame) -> pd.DataFrame:
     items_cleaned = items_df.copy()
 
     # Remove images and videos columns
-    items_cleaned = items_cleaned.drop(columns=['images', 'videos'])
+    items_cleaned = items_cleaned.drop(columns=['images', 'videos', 'bought_together'])
 
     # Remove duplicate rows based on parent_asin
     items_cleaned = items_cleaned.drop_duplicates(subset=['parent_asin'], keep='first')
@@ -109,6 +150,8 @@ def clean_reviews_data(reviews_df: pd.DataFrame) -> pd.DataFrame:
     """
     reviews_cleaned = reviews_df.copy()
 
+    reviews_cleaned = reviews_cleaned.drop(columns=['title', 'text', 'images'])
+
     # Convert list columns to strings to make them hashable
     # This is necessary for drop_duplicates() to work
     for col in reviews_cleaned.columns:
@@ -132,3 +175,57 @@ def clean_reviews_data(reviews_df: pd.DataFrame) -> pd.DataFrame:
     reviews_cleaned['rating'] = pd.to_numeric(reviews_cleaned['rating'], errors='coerce')
 
     return reviews_cleaned
+
+
+def cross_validation(models, cv=5):
+    """
+    Performs k-fold cross-validation for a given set of models and computes evaluation
+    metrics including accuracy, precision, recall, and F1 score based on the provided
+    data and specified number of splits. The function returns a dictionary containing
+    the mean and standard deviation for each computed metric.
+
+    Key metrics evaluated:
+    - Accuracy
+    - Precision
+    - Recall
+    - F1 score
+
+    :param models: A dictionary where each key is the model name (str) and the value
+        is another dictionary containing the model ('model') and its corresponding
+        cleaned data ('data'). The 'data' object should have `X_clean` and `y_clean`
+        attributes representing features and labels respectively.
+    :param cv: An integer specifying the number of folds for k-fold cross-validation.
+        The default value is 5.
+
+    :return: A dictionary where each key corresponds to a model name and contains
+        nested evaluation metrics. Each metric has its mean and standard deviation.
+    """
+    from sklearn.model_selection import KFold, cross_val_score
+    from sklearn.metrics import make_scorer, accuracy_score, precision_score, \
+        recall_score, f1_score
+
+    # Define scoring metrics
+    scoring = {
+        'accuracy': make_scorer(accuracy_score),
+        'precision': make_scorer(precision_score),
+        'recall': make_scorer(recall_score),
+        'f1': make_scorer(f1_score)
+    }
+
+    # Create KFold cross-validator
+    kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+
+    # Dictionary to store results
+    cv_results = {}
+
+    # Perform cross-validation for each model
+    for name, model in models.items():
+        cv_results[name] = {}
+        for metric_name, scorer in scoring.items():
+            scores = cross_val_score(model['model'], model['data'].X_clean, model['data'].y_clean, cv=kf, scoring=scorer)
+            cv_results[name][metric_name] = {
+                'mean': scores.mean(),
+                'std': scores.std()
+            }
+
+    return cv_results
