@@ -42,6 +42,83 @@ def load_large_jsonl(filepath, chunksize=10000):
     return pd.concat(chunks, ignore_index=True)
 
 
+def load_jsonl_part(
+    path: str | Path,
+    *,
+    start: int = 0,
+    nrows: int | None = None,
+    columns: list[str] | None = None,
+    chunksize: int = 100_000,
+) -> pd.DataFrame:
+    """
+    Load only a part of a JSON Lines (JSONL) file into a DataFrame.
+
+    This is useful for very large files when you only want:
+    - a slice of rows (via `start` + `nrows`), and/or
+    - a subset of columns (via `columns`)
+
+    Notes:
+    - This function assumes JSONL (one JSON object per line). For a single large
+      JSON array/object file, this chunked approach won't work reliably.
+    - Row indexing is 0-based.
+
+    :param path: Path to the JSONL file.
+    :param start: Number of rows to skip before starting to collect data.
+    :param nrows: Number of rows to return. If None, returns everything after `start`.
+    :param columns: Optional list of column names to keep (others are dropped).
+    :param chunksize: Number of rows per chunk to read from disk.
+    :return: A DataFrame containing the requested slice.
+    :raises ValueError: If parameters are invalid or reading fails.
+    """
+    if start < 0:
+        raise ValueError("start must be >= 0")
+    if nrows is not None and nrows < 0:
+        raise ValueError("nrows must be >= 0 or None")
+    if nrows == 0:
+        return pd.DataFrame(columns=columns if columns is not None else None)
+
+    remaining_to_skip = start
+    remaining_to_take = nrows
+    out: list[pd.DataFrame] = []
+
+    try:
+        reader = pd.read_json(path, lines=True, chunksize=chunksize)
+
+        for chunk in reader:
+            # Skip whole chunks if needed
+            if remaining_to_skip > 0:
+                if remaining_to_skip >= len(chunk):
+                    remaining_to_skip -= len(chunk)
+                    continue
+                chunk = chunk.iloc[remaining_to_skip:]
+                remaining_to_skip = 0
+
+            # Take only what we need
+            if remaining_to_take is not None:
+                if remaining_to_take <= 0:
+                    break
+                if len(chunk) > remaining_to_take:
+                    chunk = chunk.iloc[:remaining_to_take]
+                remaining_to_take -= len(chunk)
+
+            if columns is not None:
+                # Keep only requested columns that exist in this chunk
+                keep = [c for c in columns if c in chunk.columns]
+                chunk = chunk.loc[:, keep]
+
+            out.append(chunk)
+
+            if remaining_to_take is not None and remaining_to_take <= 0:
+                break
+
+        if not out:
+            return pd.DataFrame(columns=columns if columns is not None else None)
+
+        return pd.concat(out, ignore_index=True)
+
+    except Exception as e:
+        raise ValueError(f"Failed to load part of JSONL file from {path}: {str(e)}")
+
 
 def load_multiple_files(paths: list[str]) -> pd.DataFrame:
     """
