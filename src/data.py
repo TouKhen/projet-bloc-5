@@ -179,16 +179,21 @@ def save_file(df: pd.DataFrame, path: str | Path) -> None:
 
 def clean_items_data(items_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cleans and processes a DataFrame containing item data for further analysis or processing.
-    The function removes unnecessary columns (images, videos), duplicate rows based on
-    the "parent_asin" column, and rows with missing or invalid "parent_asin" values. It also
-    converts the "price" column to a numeric data type.
+    Cleans and preprocesses a DataFrame containing item data. This includes steps such as
+    removing unnecessary columns, handling duplicates, filling missing data, and converting
+    price information to a numeric format.
 
-    :param items_df: A pandas DataFrame containing item data that needs to be cleaned. The
-        DataFrame must include columns 'images', 'videos', 'parent_asin', and 'price'.
+    :param items_df: DataFrame containing item data to be cleaned and preprocessed.
+                     It is expected to contain the following columns:
+                     'images', 'videos', 'bought_together', 'parent_asin', 'price', and 'main_category'.
     :type items_df: pd.DataFrame
-    :return: A cleaned pandas DataFrame with unnecessary columns removed, duplicates handled,
-        invalid rows filtered, and the "price" column converted to numeric format.
+    :return: A cleaned and preprocessed DataFrame with the following transformations:
+             - Columns 'images', 'videos', and 'bought_together' are removed.
+             - Duplicate rows based on 'parent_asin' are dropped, keeping the first occurrence.
+             - Rows with missing or empty 'parent_asin' are removed.
+             - The 'price' column is converted to numeric and invalid entries coerced into NaN.
+             - Missing values in the 'price' column are filled with the mean price of their
+               respective 'main_category'.
     :rtype: pd.DataFrame
     """
     items_cleaned = items_df.copy()
@@ -205,6 +210,9 @@ def clean_items_data(items_df: pd.DataFrame) -> pd.DataFrame:
 
     # Convert price to numeric
     items_cleaned['price'] = pd.to_numeric(items_df['price'], errors='coerce')
+    
+    # Fill NaN prices with the mean price of main_category
+    items_cleaned['price'] = items_cleaned.groupby('main_category')['price'].transform(lambda x: x.fillna(round(x.mean(), 2)))
 
     return items_cleaned
 
